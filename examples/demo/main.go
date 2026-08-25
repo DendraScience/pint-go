@@ -1,6 +1,6 @@
 // Command demo is a walkthrough of pint-go, following Pint's tutorial
 // and user guides. Each function below is one topic: parse, arithmetic,
-// convert, temperature, logs, contexts, systems, ConvertN, π theorem.
+// convert, temperature, logs, contexts, systems, ConvertN, autocomplete, π theorem.
 //
 // Start here: NewRegistry loads the same definition files Pint ships.
 // Everything else hangs off that registry — quantities, units, converters.
@@ -67,6 +67,7 @@ var sections = []section{
 	{"systems", groupsAndSystems},
 	{"define", customUnits},
 	{"converter", converterHotPath},
+	{"complete", unitComplete},
 	{"pi", piTheorem},
 }
 
@@ -373,6 +374,35 @@ func converterHotPath(ureg *pint.Registry) {
 	dv, err := d.Convert(5)
 	must(err)
 	kv("delta Converter (5)", fmt.Sprint(dv))
+}
+
+// ParseUnitName / Complete are pint-go only (not in Python Pint). Rows are
+// full unit expressions to store, not next-token fragments.
+func unitComplete(ureg *pint.Registry) {
+	heading("Unit autocomplete", "")
+
+	un, err := ureg.ParseUnitName("degC")
+	must(err)
+	kv("ParseUnitName degC", un.Name)
+
+	got := ureg.Complete("kilopa", 5)
+	kv("Complete kilopa", strings.Join(suggestionTexts(got), ", "))
+
+	got = ureg.Complete("watt / h", 0)
+	if got.Parsed != nil {
+		kv("Complete watt / h parsed", got.Parsed.Name)
+	}
+}
+
+func suggestionTexts(got pint.CompleteResult) []string {
+	out := make([]string, 0, len(got.Suggestions))
+	if got.Parsed != nil {
+		out = append(out, got.Parsed.Name)
+	}
+	for _, s := range got.Suggestions {
+		out = append(out, s.Text)
+	}
+	return out
 }
 
 // PiTheorem finds dimensionless groups from named unit expressions

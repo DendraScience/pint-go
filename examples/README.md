@@ -6,6 +6,7 @@ Runnable programs that show pint-go the way Pint's own docs do.
 go run ./examples/demo
 go run ./examples/convert 20degC degF
 go run ./examples/bench
+go run ./examples/complete 'watt / h'
 ```
 
 ## `demo`
@@ -17,9 +18,10 @@ go run ./examples/demo
 go run ./examples/demo -only temp      # temperature / Dendra abs vs delta
 go run ./examples/demo -only context   # spectroscopy nm → THz
 go run ./examples/demo -only converter # Convert / ConvertN hot path
+go run ./examples/demo -only complete  # ParseUnitName / Complete
 ```
 
-Sections: `parse`, `arithmetic`, `convert`, `compact`, `format`, `errors`, `temp`, `log`, `context`, `systems`, `define`, `converter`, `pi`.
+Sections: `parse`, `arithmetic`, `convert`, `compact`, `format`, `errors`, `temp`, `log`, `context`, `systems`, `define`, `converter`, `complete`, `pi`.
 
 ## `convert`
 
@@ -50,3 +52,18 @@ go run ./examples/bench -n 2000000
 ```
 
 Microbenchmarks live in the library: `go test -bench=. -benchmem .`
+
+## `complete`
+
+Prints `Registry.Complete` JSON for a partial unit string (canonical parse plus suggestions). Pint-go only; not in Python Pint.
+
+```bash
+go run ./examples/complete 'watt'
+go run ./examples/complete 'kilopa'
+go run ./examples/complete 'watt / h'
+go run ./examples/complete -n 10 'meter  per se'
+```
+
+## `wasm`
+
+Browser example wrapping the same Go API (`pintComplete` / `pintParse`). See [wasm/README.md](wasm/README.md). The JS helpers are example-only; the stable surface is `Registry.Complete` and `ParseUnitName`.

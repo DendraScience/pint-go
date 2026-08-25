@@ -4,9 +4,9 @@
 
 # pint-go
 
-A pure-Go unit library with [Pint](https://github.com/hgrecco/pint)’s definition files and conversion semantics. No CGO.
+Convert units in Go with [Pint](https://github.com/hgrecco/pint)'s English definition files and conversion rules. Magnitudes are `float64`. No CGO and no extra modules; the defs are embedded.
 
-Pint is the **behavior and definition contract**, not a line-by-line Python clone. This package does not copy operator overloading, NumPy, Dask, Babel, pickle, or uncertainties. Magnitudes are `float64`.
+You parse a string and convert it. `Complete` suggests unit names if you need a picker.
 
 ## Install
 
@@ -17,58 +17,58 @@ go get github.com/dendrascience/pint-go
 ## Usage
 
 ```go
-ureg, err := pint.NewRegistry() // embeds default_en.txt + constants_en.txt
+ureg, err := pint.NewRegistry() // default_en.txt + constants_en.txt
 q, err := ureg.Parse("3.2 kPa")
 q2, err := q.To("mbar")
 
 ok, err := ureg.Compatible("degC", "degF")
 
-c, err := ureg.Converter("degC", "degF") // parse once
-f, err := c.Convert(20)                  // 68
-err = c.ConvertN(dst, src)               // []float64, no per-sample parse
+c, err := ureg.Converter("degC", "degF")
+f, err := c.Convert(20)     // 68
+err = c.ConvertN(dst, src) // many samples, one converter
 
 d, err := ureg.Converter("delta_degC", "delta_degF")
+
+un, err := ureg.ParseUnitName("degC") // degree_Celsius
+res := ureg.Complete("kilopa", 20)    // includes kilopascal
 ```
 
-`Registry` is safe for concurrent reads after `NewRegistry`. `Define` / `Load` are not concurrent with convert.
+After `NewRegistry`, convert from many goroutines. Don't call `Define` or `Load` while converting.
+
+For a slice of values, build a `Converter` and call `ConvertN`. Parse the unit pair once. `ParseUnitName` canonicalizes what you store (`degC` becomes `degree_Celsius`). `Complete` returns full expressions for a typeahead (`kilopa` → `kilopascal`). JSON field names on those types are part of the API. `syncpint` leaves that code alone.
+
+## Temperature
+
+```text
+20 degC → degF              = 68  (absolute)
+5  delta_degC → delta_degF  = 9   (interval)
+```
+
+Pint adds `delta_*` companions for offset units (`degC`, `degF`). This package does too. The definition files also include dB, octave, contexts, and systems.
 
 ## Examples
 
 ```bash
-go run ./examples/demo                 # tutorial-style walkthrough
+go run ./examples/demo                 # walkthrough
 go run ./examples/convert 20degC degF  # pint-convert analog
-go run ./examples/bench                # ConvertN / mixed-pair throughput
+go run ./examples/bench                # ConvertN throughput
+go run ./examples/complete 'kilopa'    # autocomplete JSON
 ```
 
-See [examples/README.md](examples/README.md).
+More in [examples/README.md](examples/README.md).
 
-### Absolute vs delta temperature
+## Keeping up with Pint
 
-```text
-20 degC → degF        = 68     (absolute)
-5  delta_degC → delta_degF = 9  (interval)
+Pint's `default_en.txt` and `constants_en.txt` live in this tree. The source SHA is in `PINT_SHA` (now `6fc0533`, Pint ~0.26).
+
+```bash
+go run ./tools/syncpint --pint /path/to/pint
 ```
 
-Offset units (`degC`, `degF`) synthesize `delta_*` companions, matching Pint’s offset calculus. Logarithmic units (dB, octave, …) and definition-file contexts/groups/systems are supported.
+Run that to copy the two definition files, rebuild `testdata/inventory.yml`, and print tests that appeared or dropped. Bump the SHA, run `syncpint`, then fix the parser until the ported tests pass. Apps that import this module don't need a Pint git submodule.
 
-## Dendra notes
-
-This library is meant for query-path conversion (including WASM later). Hot path: `Converter` + `ConvertN` over `[]float64`. Do not parse unit strings per sample.
-
-## Staying in sync with Pint
-
-Definitions change more often than the engine. Vendored files are copied **verbatim**.
-
-1. Pin a Pint git SHA in `PINT_SHA` (currently `6fc0533`, ~0.26 unreleased).
-2. `go run ./tools/syncpint --pint /path/to/pint` copies `default_en.txt` and `constants_en.txt`, rebuilds `testdata/inventory.yml`, and prints new/removed tests.
-3. Upgrade playbook: bump SHA → `syncpint` → fix parser/engine until core tests pass → classify any new tests in the inventory.
-
-Do not git-submodule the whole Pint tree into consumers; only the two `.txt` files plus SHA.
-
-`testdata/inventory.yml` lists every Pint `test_*` as `ported` or `skipped` with a reason. `go test ./tools/syncpint` fails if a sibling Pint checkout (or `PINT_DIR`) has tests missing from the inventory.
-
-Skipped Python-ecosystem suites (NumPy, Dask, Matplotlib, Babel, pickle, Decimal, …) are named, not silent. Pint’s own xfails for three compound log-arithmetic cases are documented expected failures.
+`testdata/inventory.yml` marks each Pint `test_*` as `ported` or `skipped` with a reason. `go test ./tools/syncpint` fails if a sibling checkout (or `PINT_DIR`) has tests missing from that list. Skipped suites (NumPy, Dask, Matplotlib) show up by name. Three compound log-arithmetic cases match Pint's own xfails.
 
 ## License
 
-BSD-3-Clause. Vendored definition files retain the Pint copyright; see `LICENSE` and `LICENSE.pint`.
+BSD-3-Clause. Definition files keep the Pint copyright; see `LICENSE` and `LICENSE.pint`.

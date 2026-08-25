@@ -4,6 +4,8 @@
 *.out
 /bin/
 /dist/
+examples/wasm/pint.wasm
+examples/wasm/wasm_exec.js
 
 # Go
 coverage.txt
