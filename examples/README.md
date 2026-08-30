@@ -66,4 +66,4 @@ go run ./examples/complete -n 10 'meter  per se'
 
 ## `wasm`
 
-Browser example wrapping the same Go API (`pintComplete` / `pintParse`). See [wasm/README.md](wasm/README.md). The JS helpers are example-only; the stable surface is `Registry.Complete` and `ParseUnitName`.
+Browser example wrapping Complete, ParseUnitName, Convert, Compatible, and Load. See [wasm/README.md](wasm/README.md). The JS helpers are example-only; the stable surface is the Go API.

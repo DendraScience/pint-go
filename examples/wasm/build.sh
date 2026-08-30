@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build pint-go Complete / ParseUnitName bindings for GOOS=js GOARCH=wasm.
+# Build pint-go browser bindings for GOOS=js GOARCH=wasm.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
