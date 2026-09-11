@@ -1,8 +1,11 @@
 package pint
 
 import (
+	"errors"
 	"fmt"
 	"math"
+	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -94,43 +97,133 @@ func (r *Registry) Quantity(mag float64, unit string) (Quantity, error) {
 	return Quantity{reg: r, mag: mag, units: u}, nil
 }
 
-// Compatible reports whether two unit expressions share dimensionality.
-func (r *Registry) Compatible(from, to string) (bool, error) {
-	a, err := r.ParseUnits(from)
-	if err != nil {
-		return false, err
+// Fingerprint is a stable cache key for this scope: context names in order,
+// each with sorted k=magnitude\x1dunit params. Empty Scope is "".
+// Equivalent quantities written differently (18 g/mol vs 0.018 kg/mol) do not
+// collapse; the caller may canonicalize before building the Scope.
+func (s Scope) Fingerprint() string {
+	if len(s) == 0 {
+		return ""
 	}
-	b, err := r.ParseUnits(to)
-	if err != nil {
-		return false, err
+	var b strings.Builder
+	for i, use := range s {
+		if i > 0 {
+			b.WriteByte(0x1e)
+		}
+		b.WriteString(use.Name)
+		if len(use.Params) == 0 {
+			continue
+		}
+		keys := make([]string, 0, len(use.Params))
+		for k := range use.Params {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		b.WriteByte(0x1f)
+		for j, k := range keys {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			p := use.Params[k]
+			b.WriteString(k)
+			b.WriteByte('=')
+			b.WriteString(strconv.FormatFloat(p.Magnitude, 'g', 17, 64))
+			b.WriteByte(0x1d)
+			b.WriteString(p.Unit)
+		}
 	}
-	da, err := r.dimensionality(a)
-	if err != nil {
-		return false, err
+	return b.String()
+}
+
+func copyActive(src []activeContext) []activeContext {
+	out := make([]activeContext, len(src))
+	for i, ac := range src {
+		vals := make(map[string]Quantity, len(ac.values))
+		for k, v := range ac.values {
+			vals[k] = v
+		}
+		out[i] = activeContext{ctx: ac.ctx, values: vals}
 	}
-	db, err := r.dimensionality(b)
-	if err != nil {
-		return false, err
+	return out
+}
+
+// bindActive snapshots the contexts used for one Converter / Compatible call.
+// Zero extra args copies r.active (CLI). One Scope, even empty, is that list.
+func (r *Registry) bindActive(scope ...Scope) ([]activeContext, error) {
+	if len(scope) > 1 {
+		return nil, fmt.Errorf("Converter accepts at most one Scope")
 	}
-	if da.Equal(db) {
+	if len(scope) == 0 {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		return copyActive(r.active), nil
+	}
+	return r.scopeToActive(scope[0])
+}
+
+func (r *Registry) scopeToActive(scope Scope) ([]activeContext, error) {
+	out := make([]activeContext, 0, len(scope))
+	for _, use := range scope {
+		r.mu.RLock()
+		ctx, ok := r.contexts[use.Name]
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("unknown context %q", use.Name)
+		}
+		vals, err := r.bindContextParams(ctx, use.Params)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, activeContext{ctx: ctx, values: vals})
+	}
+	return out, nil
+}
+
+// bindContextParams overlays Params on dimensionless header defaults.
+// Parse units before any registry lock (Quantity takes r.mu).
+func (r *Registry) bindContextParams(ctx *Context, params map[string]Param) (map[string]Quantity, error) {
+	vals := make(map[string]Quantity, len(ctx.Defaults)+len(params))
+	for k, v := range ctx.Defaults {
+		vals[k] = Quantity{reg: r, mag: v}
+	}
+	for k, p := range params {
+		if _, ok := ctx.Defaults[k]; !ok {
+			return nil, fmt.Errorf("unknown context parameter %q for %q", k, ctx.Name)
+		}
+		q, err := r.Quantity(p.Magnitude, p.Unit)
+		if err != nil {
+			return nil, fmt.Errorf("context param %q: %w", k, err)
+		}
+		vals[k] = q
+	}
+	return vals, nil
+}
+
+// Compatible reports whether two unit expressions can be converted. An omitted
+// scope uses r.active. An explicit Scope is bound the same way as Converter.
+func (r *Registry) Compatible(from, to string, scope ...Scope) (bool, error) {
+	_, err := r.Converter(from, to, scope...)
+	if err == nil {
 		return true, nil
 	}
-	if r.contextPath(da, db) != nil {
-		return true, nil
+	var de *DimensionalityError
+	if errors.As(err, &de) {
+		return false, nil
 	}
-	return false, nil
+	return false, err
 }
 
 // Convert converts value from src units to dst units.
-func (r *Registry) Convert(value float64, src, dst string) (float64, error) {
-	c, err := r.Converter(src, dst)
+func (r *Registry) Convert(value float64, src, dst string, scope ...Scope) (float64, error) {
+	c, err := r.Converter(src, dst, scope...)
 	if err != nil {
 		return 0, err
 	}
 	return c.Convert(value)
 }
 
-// Converter is a parsed conversion from one unit to another.
+// ConverterOp is a parsed conversion from one unit to another.
+// Convert does not read Registry.active; the bound scope is snapshotted at compile.
 type ConverterOp struct {
 	reg    *Registry
 	src    UnitsContainer
@@ -138,10 +231,12 @@ type ConverterOp struct {
 	scale  float64
 	offset float64
 	simple bool // y = scale*x + offset
+	active []activeContext
 }
 
 // Converter returns a reusable conversion between unit expressions.
-func (r *Registry) Converter(src, dst string) (*ConverterOp, error) {
+// Zero extra args snapshots r.active. A service passes an explicit Scope.
+func (r *Registry) Converter(src, dst string, scope ...Scope) (*ConverterOp, error) {
 	su, err := r.ParseUnits(src)
 	if err != nil {
 		return nil, err
@@ -150,7 +245,11 @@ func (r *Registry) Converter(src, dst string) (*ConverterOp, error) {
 	if err != nil {
 		return nil, err
 	}
-	op := &ConverterOp{reg: r, src: su, dst: du}
+	active, err := r.bindActive(scope...)
+	if err != nil {
+		return nil, err
+	}
+	op := &ConverterOp{reg: r, src: su, dst: du, active: active}
 	if su.Equal(du) {
 		op.scale, op.simple = 1, true
 		return op, nil
@@ -158,19 +257,37 @@ func (r *Registry) Converter(src, dst string) (*ConverterOp, error) {
 	// Try multiplicative factor (no offset units).
 	if r.onlyMultiplicative(su) && r.onlyMultiplicative(du) {
 		f, err := r.conversionFactor(su, du)
-		if err != nil {
+		if err == nil {
+			op.scale, op.simple = f, true
+			return op, nil
+		}
+		var de *DimensionalityError
+		if !errors.As(err, &de) {
 			return nil, err
 		}
-		op.scale, op.simple = f, true
+		srcDim, derr := r.dimensionality(su)
+		if derr != nil {
+			return nil, derr
+		}
+		dstDim, derr := r.dimensionality(du)
+		if derr != nil {
+			return nil, derr
+		}
+		if r.contextPath(srcDim, dstDim, active) == nil {
+			return nil, err
+		}
+		if err := r.finishContextOp(op, src, dst); err != nil {
+			return nil, err
+		}
 		return op, nil
 	}
 	// Offset (affine) conversions: y = scale*x + offset. Logarithmic is not affine.
 	if !r.hasLogarithmic(su) && !r.hasLogarithmic(du) {
-		c0, err := r.convert(0, su, du)
+		c0, err := r.convertIn(0, su, du, active)
 		if err != nil {
 			return nil, err
 		}
-		c1, err := r.convert(1, su, du)
+		c1, err := r.convertIn(1, su, du, active)
 		if err != nil {
 			return nil, err
 		}
@@ -179,6 +296,29 @@ func (r *Registry) Converter(src, dst string) (*ConverterOp, error) {
 		op.simple = true
 	}
 	return op, nil
+}
+
+// finishContextOp samples the bound hop. Inf/NaN at value 1 is a parameter
+// error (chem mw=0). Inf at 0 is a 1/value hop (spectroscopy); leave !simple.
+func (r *Registry) finishContextOp(op *ConverterOp, src, dst string) error {
+	y1, err := r.convertIn(1, op.src, op.dst, op.active)
+	if err != nil {
+		return err
+	}
+	if math.IsNaN(y1) || math.IsInf(y1, 0) {
+		return &NonFiniteConversionError{From: src, To: dst}
+	}
+	if r.hasLogarithmic(op.src) || r.hasLogarithmic(op.dst) {
+		return nil
+	}
+	y0, err := r.convertIn(0, op.src, op.dst, op.active)
+	if err != nil || math.IsNaN(y0) || math.IsInf(y0, 0) {
+		return nil
+	}
+	op.scale = y1 - y0
+	op.offset = y0
+	op.simple = true
+	return nil
 }
 
 func (r *Registry) hasLogarithmic(u UnitsContainer) bool {
@@ -197,7 +337,7 @@ func (c *ConverterOp) Convert(v float64) (float64, error) {
 	if c.simple {
 		return v*c.scale + c.offset, nil
 	}
-	return c.reg.convert(v, c.src, c.dst)
+	return c.reg.convertIn(v, c.src, c.dst, c.active)
 }
 
 // ConvertN converts src into dst, which must be the same length.
@@ -217,7 +357,7 @@ func (c *ConverterOp) ConvertN(dst, src []float64) error {
 		return nil
 	}
 	for i, x := range src {
-		y, err := c.reg.convert(x, c.src, c.dst)
+		y, err := c.reg.convertIn(x, c.src, c.dst, c.active)
 		if err != nil {
 			return err
 		}
@@ -239,6 +379,13 @@ func (r *Registry) onlyMultiplicative(u UnitsContainer) bool {
 }
 
 func (r *Registry) convert(value float64, src, dst UnitsContainer) (float64, error) {
+	return r.convertIn(value, src, dst, nil)
+}
+
+// emptyActive is a bound empty scope (not nil). convertIn treats nil as r.active.
+var emptyActive = []activeContext{}
+
+func (r *Registry) convertIn(value float64, src, dst UnitsContainer, active []activeContext) (float64, error) {
 	if src.Equal(dst) {
 		return value, nil
 	}
@@ -261,16 +408,30 @@ func (r *Registry) convert(value float64, src, dst UnitsContainer) (float64, err
 	}
 
 	if !srcDim.Equal(dstDim) {
-		if path := r.contextPath(srcDim, dstDim); path != nil {
+		if path := r.contextPath(srcDim, dstDim, active); path != nil {
 			q := Quantity{reg: r, mag: value, units: src}
 			for i := 0; i+1 < len(path); i++ {
-				nq, err := r.applyTransform(q, path[i], path[i+1])
+				nq, err := r.applyTransform(q, path[i], path[i+1], active)
 				if err != nil {
 					return 0, err
 				}
+				nd, err := r.dimensionality(nq.units)
+				if err != nil {
+					return 0, err
+				}
+				if !nd.Equal(path[i+1]) {
+					return 0, &DimensionalityError{
+						Units1: nq.units.String(),
+						Units2: path[i+1].String(),
+						Dim1:   nd.String(),
+						Dim2:   path[i+1].String(),
+						Extra:  " - context transform did not produce the destination dimension; pass parameters as quantities with units",
+					}
+				}
 				q = nq
 			}
-			return r.convert(q.mag, q.units, dst)
+			// No further context hops; remainder is same-dimension (or error).
+			return r.convertIn(q.mag, q.units, dst, emptyActive)
 		}
 		return 0, &DimensionalityError{Units1: src.String(), Units2: dst.String(), Dim1: srcDim.String(), Dim2: dstDim.String()}
 	}
@@ -396,15 +557,32 @@ func (r *Registry) dimensionality(u UnitsContainer) (UnitsContainer, error) {
 		return d, nil
 	}
 	r.mu.Unlock()
+	out, err := r.computeDimensionality(u)
+	if err != nil {
+		return UnitsContainer{}, err
+	}
+	r.mu.Lock()
+	r.dimCache[key] = out
+	r.mu.Unlock()
+	return out, nil
+}
+
+// computeDimensionality does not take r.mu. Load holds the lock and @context
+// headers must not call dimensionality (that method locks).
+func (r *Registry) computeDimensionality(u UnitsContainer) (UnitsContainer, error) {
+	if u.Empty() {
+		return UnitsContainer{}, nil
+	}
+	if d, ok := r.dimCache[u.Key()]; ok {
+		return d, nil
+	}
 	acc := map[string]float64{}
 	if err := r.dimRecurse(u, 1, acc); err != nil {
 		return UnitsContainer{}, err
 	}
 	delete(acc, "[]")
 	out := NewUnitsContainer(acc)
-	r.mu.Lock()
-	r.dimCache[key] = out
-	r.mu.Unlock()
+	r.dimCache[u.Key()] = out
 	return out, nil
 }
 
@@ -505,14 +683,16 @@ func (r *Registry) rootRecurse(ref UnitsContainer, exp float64, acc map[string]f
 	return nil
 }
 
-func (r *Registry) contextPath(src, dst UnitsContainer) []UnitsContainer {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if len(r.active) == 0 {
+func (r *Registry) contextPath(src, dst UnitsContainer, active []activeContext) []UnitsContainer {
+	if active == nil {
+		r.mu.RLock()
+		active = r.active
+		r.mu.RUnlock()
+	}
+	if len(active) == 0 {
 		return nil
 	}
-	type node struct{ u UnitsContainer }
-	// BFS over transforms of active contexts.
+	// BFS over transforms of the provided (or live) active contexts.
 	type item struct {
 		cur  UnitsContainer
 		path []UnitsContainer
@@ -525,7 +705,7 @@ func (r *Registry) contextPath(src, dst UnitsContainer) []UnitsContainer {
 		if it.cur.Equal(dst) {
 			return it.path
 		}
-		for _, ac := range r.active {
+		for _, ac := range active {
 			for _, tr := range ac.ctx.transforms {
 				if !tr.src.Equal(it.cur) {
 					continue
@@ -543,11 +723,15 @@ func (r *Registry) contextPath(src, dst UnitsContainer) []UnitsContainer {
 	return nil
 }
 
-func (r *Registry) applyTransform(q Quantity, srcDim, dstDim UnitsContainer) (Quantity, error) {
-	r.mu.RLock()
+func (r *Registry) applyTransform(q Quantity, srcDim, dstDim UnitsContainer, active []activeContext) (Quantity, error) {
+	if active == nil {
+		r.mu.RLock()
+		active = r.active
+		r.mu.RUnlock()
+	}
 	var eq string
-	vals := map[string]float64{}
-	for _, ac := range r.active {
+	vals := map[string]Quantity{}
+	for _, ac := range active {
 		for k, v := range ac.values {
 			vals[k] = v
 		}
@@ -557,26 +741,26 @@ func (r *Registry) applyTransform(q Quantity, srcDim, dstDim UnitsContainer) (Qu
 			}
 		}
 	}
-	r.mu.RUnlock()
 	if eq == "" {
 		return Quantity{}, fmt.Errorf("no transform from %s to %s", srcDim, dstDim)
 	}
 	return r.evalContextEq(eq, q, vals)
 }
 
-func (r *Registry) evalContextEq(eq string, value Quantity, vars map[string]float64) (Quantity, error) {
-	// Substitute numeric variables, then parse. Pint binds `value` as a Quantity.
+func formatEqQuantity(q Quantity) string {
+	if q.units.Empty() {
+		return fmt.Sprintf("(%.17g)", q.mag)
+	}
+	return fmt.Sprintf("(%.17g * %s)", q.mag, q.units.String())
+}
+
+func (r *Registry) evalContextEq(eq string, value Quantity, vars map[string]Quantity) (Quantity, error) {
+	// Substitute quantities, then parse. Same as Pint: value and params are Quantities.
 	s := eq
 	for k, v := range vars {
-		s = replaceIdent(s, k, fmt.Sprintf("(%.17g)", v))
+		s = replaceIdent(s, k, formatEqQuantity(v))
 	}
-	var val string
-	if value.units.Empty() {
-		val = fmt.Sprintf("(%.17g)", value.mag)
-	} else {
-		val = fmt.Sprintf("(%.17g * %s)", value.mag, value.units.String())
-	}
-	s = replaceIdent(s, "value", val)
+	s = replaceIdent(s, "value", formatEqQuantity(value))
 	return r.Parse(s)
 }
 
@@ -619,20 +803,21 @@ func identCharAt(s string, i int) bool {
 }
 
 // EnableContext activates a named conversion context (e.g. "spectroscopy").
-func (r *Registry) EnableContext(name string, vars map[string]float64) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// It mutates Registry.active. Safe for the CLI. Services bind a Scope on
+// Converter instead of calling this on a shared registry.
+func (r *Registry) EnableContext(name string, params map[string]Param) error {
+	r.mu.RLock()
 	ctx, ok := r.contexts[name]
+	r.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("unknown context %q", name)
 	}
-	vals := map[string]float64{}
-	for k, v := range ctx.Defaults {
-		vals[k] = v
+	vals, err := r.bindContextParams(ctx, params)
+	if err != nil {
+		return err
 	}
-	for k, v := range vars {
-		vals[k] = v
-	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.active = append(r.active, activeContext{ctx: ctx, values: vals})
 	r.convCache = map[string]float64{}
 	return nil

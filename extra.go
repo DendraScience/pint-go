@@ -315,14 +315,45 @@ func (r *Registry) ContextByName(name string) (*Context, error) {
 	return c, nil
 }
 
-// CompatibleUnits lists canonical unit names with the same dimensionality as unit.
+// Contexts lists each loaded context once by canonical Name, with declared
+// parameter keys sorted. Aliases are omitted. Safe for concurrent convert.
+func (r *Registry) Contexts() []ContextInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	seen := map[string]struct{}{}
+	out := make([]ContextInfo, 0)
+	for _, ctx := range r.contexts {
+		if ctx == nil {
+			continue
+		}
+		if _, ok := seen[ctx.Name]; ok {
+			continue
+		}
+		seen[ctx.Name] = struct{}{}
+		params := make([]string, 0, len(ctx.Defaults))
+		for k := range ctx.Defaults {
+			params = append(params, k)
+		}
+		sort.Strings(params)
+		out = append(out, ContextInfo{Name: ctx.Name, Params: params})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// CompatibleUnits lists canonical unit names convertible from unit.
+// Same dimension always; context hops use the bound scope (or r.active).
 // If groupOrSystem is non-empty, the list is restricted to that group or system's members.
-func (r *Registry) CompatibleUnits(unit, groupOrSystem string) ([]string, error) {
+func (r *Registry) CompatibleUnits(unit, groupOrSystem string, scope ...Scope) ([]string, error) {
 	u, err := r.ParseUnits(unit)
 	if err != nil {
 		return nil, err
 	}
 	dim, err := r.dimensionality(u)
+	if err != nil {
+		return nil, err
+	}
+	active, err := r.bindActive(scope...)
 	if err != nil {
 		return nil, err
 	}
@@ -360,7 +391,7 @@ func (r *Registry) CompatibleUnits(unit, groupOrSystem string) ([]string, error)
 		if err != nil {
 			continue
 		}
-		if d.Equal(dim) {
+		if d.Equal(dim) || r.contextPath(dim, d, active) != nil {
 			out = append(out, name)
 		}
 	}

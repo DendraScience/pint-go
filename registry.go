@@ -11,7 +11,9 @@ import (
 
 // Registry holds unit definitions and performs conversions.
 // After NewRegistry (or Load), it is safe for concurrent reads.
-// Define is not concurrent with Convert.
+// Define, Load, and EnableContext are not concurrent with Convert.
+// Do not call EnableContext on a registry that is serving Converter from
+// many goroutines; bind a Scope on each Converter / Compatible call instead.
 type Registry struct {
 	mu sync.RWMutex
 
@@ -396,11 +398,12 @@ func (r *Registry) addContext(d parsedDef) error {
 		if err != nil {
 			return err
 		}
-		src, err := r.dimensionality(srcU)
+		// dimensionality() locks; Load already holds r.mu.
+		src, err := r.computeDimensionality(srcU)
 		if err != nil {
 			return err
 		}
-		dst, err := r.dimensionality(dstU)
+		dst, err := r.computeDimensionality(dstU)
 		if err != nil {
 			return err
 		}

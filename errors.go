@@ -65,6 +65,17 @@ func (e *UndefinedUnitError) Error() string {
 }
 func (e *UndefinedUnitError) PintError() {}
 
+// NonFiniteConversionError is raised when a bound context hop would convert to
+// Inf or NaN (for example chemistry with mw=0). Fail closed; do not return Inf.
+type NonFiniteConversionError struct {
+	From, To string
+}
+
+func (e *NonFiniteConversionError) Error() string {
+	return fmt.Sprintf("conversion %s -> %s is not finite for the bound context parameters", e.From, e.To)
+}
+func (e *NonFiniteConversionError) PintError() {}
+
 // DimensionalityError is raised when converting between incompatible units.
 type DimensionalityError struct {
 	Units1, Units2 string

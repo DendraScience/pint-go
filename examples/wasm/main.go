@@ -3,6 +3,9 @@
 // Browser wrappers for Registry.Complete, ParseUnitName, Convert, Compatible,
 // and Load. The stable API is the Go types; these JS helpers are convenience
 // wrappers for the Main App playground.
+//
+// pintCompatible and pintConvert take an optional trailing JSON scope:
+// [{name, params:{key:{magnitude, unit}}}]. pintComplete does not.
 package main
 
 import (
@@ -57,7 +60,16 @@ func main() {
 		value := args[0].Float()
 		src := args[1].String()
 		dst := args[2].String()
-		out, err := ureg.Convert(value, src, dst)
+		scope, present, err := parseScopeArg(args, 3)
+		if err != nil {
+			return jsonErr(err)
+		}
+		var out float64
+		if present {
+			out, err = ureg.Convert(value, src, dst, scope)
+		} else {
+			out, err = ureg.Convert(value, src, dst)
+		}
 		if err != nil {
 			return jsonErr(err)
 		}
@@ -81,7 +93,16 @@ func main() {
 		if len(args) < 2 {
 			return jsonErrMsg("compatible requires from and to units")
 		}
-		ok, err := ureg.Compatible(args[0].String(), args[1].String())
+		scope, present, err := parseScopeArg(args, 2)
+		if err != nil {
+			return jsonErr(err)
+		}
+		var ok bool
+		if present {
+			ok, err = ureg.Compatible(args[0].String(), args[1].String(), scope)
+		} else {
+			ok, err = ureg.Compatible(args[0].String(), args[1].String())
+		}
 		if err != nil {
 			return jsonErr(err)
 		}
@@ -155,4 +176,37 @@ func jsonErrMsg(msg string) string {
 		Error string `json:"error"`
 	}{Error: msg})
 	return string(b)
+}
+
+type jsParam struct {
+	Magnitude float64 `json:"magnitude"`
+	Unit      string  `json:"unit"`
+}
+
+type jsContextUse struct {
+	Name   string             `json:"name"`
+	Params map[string]jsParam `json:"params"`
+}
+
+func parseScopeArg(args []js.Value, idx int) (pint.Scope, bool, error) {
+	if idx >= len(args) || args[idx].IsUndefined() || args[idx].IsNull() {
+		return nil, false, nil
+	}
+	raw := args[idx].String()
+	if raw == "" {
+		return nil, false, nil
+	}
+	var uses []jsContextUse
+	if err := json.Unmarshal([]byte(raw), &uses); err != nil {
+		return nil, true, err
+	}
+	scope := make(pint.Scope, len(uses))
+	for i, u := range uses {
+		params := make(map[string]pint.Param, len(u.Params))
+		for k, p := range u.Params {
+			params[k] = pint.Param{Magnitude: p.Magnitude, Unit: p.Unit}
+		}
+		scope[i] = pint.ContextUse{Name: u.Name, Params: params}
+	}
+	return scope, true, nil
 }
