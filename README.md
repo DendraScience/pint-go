@@ -8,6 +8,8 @@ Convert units in Go with [Pint](https://github.com/hgrecco/pint)'s English defin
 
 You parse a string and convert it. `Complete` suggests unit names if you need a picker.
 
+How Pint works (definition lines, the conversion walk, contexts): [docs/how-it-works.md](docs/how-it-works.md). This package (concurrency, `Complete`, scope): [docs/go.md](docs/go.md).
+
 ## Install
 
 ```bash
