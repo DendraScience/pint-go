@@ -37,7 +37,7 @@ res := ureg.Complete("kilopa", 20)    // includes kilopascal
 
 After `NewRegistry`, convert from many goroutines. Don't call `Define`, `Load`, or `EnableContext` while converting.
 
-For a slice of values, build a `Converter` and call `ConvertN`. Parse the unit pair once. `ParseUnitName` canonicalizes what you store (`degC` becomes `degree_Celsius`). `Complete` returns full expressions for a typeahead (`kilopa` → `kilopascal`). JSON field names on those types are part of the API. `syncpint` leaves that code alone.
+For a slice of values, build a `Converter` and call `ConvertN`. Parse the unit pair once. `ParseUnitName` canonicalizes what you store (`degC` becomes `degree_Celsius`, `mile per hour` and `mph` become `mile_per_hour`). `Complete` returns full expressions for a typeahead (`kilopa` → `kilopascal`). JSON field names on those types are part of the API. `syncpint` leaves that code alone.
 
 `Converter` is the service hot path (compile once, convert magnitudes). Context hops (PSU ↔ g/kg, nm ↔ THz, mol ↔ g) need a **scope** — an ordered list of context names and **quantity** params (`Param{Magnitude, Unit}`), the same contract as Python Pint (`mw=18*ureg("g/mol")`). Empty `Unit` is dimensionless (`n`). Zero extra args snapshots `r.active` (CLI). Services never call `EnableContext` on a shared registry. See [docs/conversion-profiles.md](docs/conversion-profiles.md). `@context` blocks load through `Load`, not `Define`. `Contexts()` lists canonical catalog rows (name + param keys) for a UI picker.
 

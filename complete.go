@@ -30,8 +30,9 @@ const (
 //     Require minPrefixUnitPartial runes of the unit after that spelling so
 //     "milli"/"centi"/"kilo" do not enumerate every milli* unit. "millim"
 //     and "kilopa" do compose. Short symbols still work: "kPa", "mm".
-//  4. If the glued suggestion parses, emit the canonical full expression.
-//     Drop suggestions that parse to the same unit as Parsed.
+//  4. If the glued suggestion parses, emit the canonical full expression
+//     (catalog name when the product is a defined unit). Drop suggestions
+//     that parse to the same unit as Parsed.
 
 // minPrefixUnitPartial is how much of the unit is required after an SI/binary
 // prefix spelling. 0 lists every milli* row for "milli". 1 waits for millim,
@@ -73,11 +74,13 @@ type CompleteResult struct {
 
 // ParseUnitName returns the canonical unit expression for s, plus display
 // fields (symbol, dimensionality, aliases). Aliases such as degC become
-// degree_Celsius. Empty or unparseable input returns an error.
+// degree_Celsius. A compound that is exactly a catalog definition
+// (mile / hour, mile per hour) becomes that catalog name (mile_per_hour).
+// Empty or unparseable input returns an error.
 //
 // ParseUnitName is a pint-go extension; Python Pint has no equivalent.
 // A successful parse may synthesize a prefixed unit into the registry
-// (same as [Registry.ParseUnits]).
+// (same as [Registry.ParseUnits]). Persist the returned Name.
 func (r *Registry) ParseUnitName(s string) (UnitName, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -92,10 +95,16 @@ func (r *Registry) ParseUnitName(s string) (UnitName, error) {
 	if err != nil {
 		return UnitName{}, err
 	}
-	out := UnitName{Name: name, Dimensionality: dim.String()}
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if u.Len() >= 2 {
+		if n := r.unitByExpr[name]; n != "" {
+			name = n
+			u = unitPair(n, 1)
+		}
+	}
+	out := UnitName{Name: name, Dimensionality: dim.String()}
 	if u.Len() == 1 {
 		n := u.Names()[0]
 		if u.Get(n) == 1 {
@@ -208,8 +217,14 @@ func (r *Registry) collectCompleteCands(fragment string) map[string]completeCand
 			remain = 0
 		}
 		prev, ok := best[name]
-		if ok && (prev.rank < rank || (prev.rank == rank && prev.remain <= remain)) {
-			return
+		if ok {
+			if prev.symbol == "" && symbol != "" {
+				prev.symbol = symbol
+				best[name] = prev
+			}
+			if prev.rank < rank || (prev.rank == rank && prev.remain <= remain) {
+				return
+			}
 		}
 		best[name] = completeCand{name: name, symbol: symbol, kind: kind, rank: rank, remain: remain}
 	}

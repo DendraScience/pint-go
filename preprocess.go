@@ -72,31 +72,70 @@ func stringPreprocessor(s string) string {
 	return s
 }
 
+// splitNumberLetter inserts a space between a magnitude and a following unit
+// (1hour → "1 hour") so the lexer can parse implicit multiply. It must not
+// split inside an identifier: catalog names such as water_density_4C and
+// meter_H2O are one token. Python Pint never runs this preprocessor on
+// attribute access (ureg.water_density_4C).
 func splitNumberLetter(s string) string {
 	var b strings.Builder
 	b.Grow(len(s) + 8)
 	runes := []rune(s)
+	inIdent := false
+	inNumber := false
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
+		switch {
+		case inIdent && (unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'):
+			// stay in the identifier
+		case inNumber && (unicode.IsDigit(r) || r == '.'):
+			// stay in the magnitude
+		case inNumber && (r == 'e' || r == 'E') && i+1 < len(runes) &&
+			(unicode.IsDigit(runes[i+1]) || runes[i+1] == '+' || runes[i+1] == '-'):
+			// scientific exponent marker
+		case inNumber && (r == '+' || r == '-') && i > 0 && (runes[i-1] == 'e' || runes[i-1] == 'E'):
+			// sign of a scientific exponent
+		case unicode.IsLetter(r) || r == '_':
+			inIdent = true
+			inNumber = false
+		case unicode.IsDigit(r) || r == '.':
+			inIdent = false
+			inNumber = true
+		default:
+			inIdent = false
+			inNumber = false
+		}
 		b.WriteRune(r)
+		if inIdent {
+			continue
+		}
 		if unicode.IsDigit(r) || r == '.' {
-			if i+1 < len(runes) {
-				n := runes[i+1]
-				if unicode.IsLetter(n) {
-					if (n == 'e' || n == 'E') && i+2 < len(runes) {
-						n2 := runes[i+2]
-						if unicode.IsDigit(n2) || n2 == '+' || n2 == '-' {
-							continue
-						}
-					}
-					if n != 'e' && n != 'E' || i+2 >= len(runes) || !unicode.IsDigit(runes[i+2]) && runes[i+2] != '+' && runes[i+2] != '-' {
-						b.WriteByte(' ')
-					}
-				}
+			if i+1 >= len(runes) {
+				continue
 			}
+			n := runes[i+1]
+			if !unicode.IsLetter(n) {
+				continue
+			}
+			if isScientificExp(runes, i) {
+				continue
+			}
+			b.WriteByte(' ')
 		}
 	}
 	return b.String()
+}
+
+func isScientificExp(runes []rune, i int) bool {
+	n := runes[i+1]
+	if n != 'e' && n != 'E' {
+		return false
+	}
+	if i+2 >= len(runes) {
+		return false
+	}
+	n2 := runes[i+2]
+	return unicode.IsDigit(n2) || n2 == '+' || n2 == '-'
 }
 
 func isIdentStart(r rune) bool {

@@ -20,6 +20,20 @@ func TestParseUnitNameWatt(t *testing.T) {
 	}
 }
 
+func TestParseUnitNameKilowattSymbol(t *testing.T) {
+	r := mustReg(t)
+	un, err := r.ParseUnitName("kilowatt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if un.Name != "kilowatt" {
+		t.Fatalf("Name=%q want kilowatt", un.Name)
+	}
+	if un.Symbol != "kW" {
+		t.Fatalf("Symbol=%q want kW", un.Symbol)
+	}
+}
+
 func TestParseUnitNameDegC(t *testing.T) {
 	r := mustReg(t)
 	un, err := r.ParseUnitName("degC")
@@ -28,6 +42,43 @@ func TestParseUnitNameDegC(t *testing.T) {
 	}
 	if un.Name != "degree_Celsius" {
 		t.Fatalf("Name=%q want degree_Celsius", un.Name)
+	}
+}
+
+func TestParseUnitNamePrefersCatalogCompound(t *testing.T) {
+	r := mustReg(t)
+	cases := []struct{ in, want string }{
+		{"mph", "mile_per_hour"},
+		{"mile per hour", "mile_per_hour"},
+		{"mile / hour", "mile_per_hour"},
+		{"kph", "kilometer_per_hour"},
+		{"kilometer / hour", "kilometer_per_hour"},
+		{"meter / second", "meter_per_second"},
+		{"joule / second", "watt"},
+		{"centimeter per hour", "centimeter / hour"},
+		{"cm / hour", "centimeter / hour"},
+	}
+	for _, tc := range cases {
+		un, err := r.ParseUnitName(tc.in)
+		if err != nil {
+			t.Errorf("%q: %v", tc.in, err)
+			continue
+		}
+		if un.Name != tc.want {
+			t.Errorf("%q Name=%q want %q", tc.in, un.Name, tc.want)
+		}
+	}
+
+	for _, q := range []string{"mph", "mile per hour", "mile / hour"} {
+		got := r.Complete(q, 20)
+		if got.Parsed == nil || got.Parsed.Name != "mile_per_hour" {
+			t.Errorf("Complete(%q) Parsed=%v want mile_per_hour", q, got.Parsed)
+		}
+		for _, s := range got.Suggestions {
+			if s.Text == q || s.Text == "mile / hour" {
+				t.Errorf("Complete(%q) duplicate suggestion %q", q, s.Text)
+			}
+		}
 	}
 }
 
@@ -95,6 +146,40 @@ func TestCompletePrefixedPartial(t *testing.T) {
 	}
 }
 
+func TestCompleteKilowaSuggestionsParse(t *testing.T) {
+	r := mustReg(t)
+	got := r.Complete("kilowa", 20)
+	if !completeHasText(got, "kilowatt") {
+		t.Fatalf("suggestions %v missing kilowatt", suggestionTexts(got))
+	}
+	for _, s := range got.Suggestions {
+		if _, err := r.ParseUnitName(s.Text); err != nil {
+			t.Errorf("suggestion %q does not parse: %v", s.Text, err)
+		}
+	}
+}
+
+func TestCompleteKilowaKeepsSymbolAfterParse(t *testing.T) {
+	r := mustReg(t)
+	before := suggestionByText(r.Complete("kilowa", 20), "kilowatt")
+	if before == nil {
+		t.Fatal("kilowatt missing before parse")
+	}
+	if before.Symbol != "kW" {
+		t.Fatalf("before parse Symbol=%q want kW", before.Symbol)
+	}
+	if _, err := r.ParseUnitName("kilowatt"); err != nil {
+		t.Fatal(err)
+	}
+	after := suggestionByText(r.Complete("kilowa", 20), "kilowatt")
+	if after == nil {
+		t.Fatal("kilowatt missing after parse")
+	}
+	if after.Symbol != "kW" {
+		t.Fatalf("after parse Symbol=%q want kW", after.Symbol)
+	}
+}
+
 func TestCompleteBarePrefixDoesNotCompose(t *testing.T) {
 	r := mustReg(t)
 	for _, q := range []string{"milli", "centi", "kilo", "mega", "micro", "nano", "pico"} {
@@ -141,15 +226,15 @@ func TestCompleteCanonicalizesCompound(t *testing.T) {
 	if got.Parsed != nil {
 		t.Fatalf("Parsed=%v want nil", got.Parsed)
 	}
-	if !completeHasText(got, "meter / second") {
-		t.Fatalf("suggestions %v missing meter / second", suggestionTexts(got))
+	if !completeHasText(got, "meter_per_second") {
+		t.Fatalf("suggestions %v missing meter_per_second", suggestionTexts(got))
 	}
 	for _, s := range got.Suggestions {
 		if strings.Contains(s.Text, " per ") {
 			t.Fatalf("suggestion %q still uses per", s.Text)
 		}
-		if s.Text == "meter / second" && s.Canonical != "meter / second" {
-			t.Fatalf("Canonical=%q want meter / second", s.Canonical)
+		if s.Text == "meter_per_second" && s.Canonical != "meter_per_second" {
+			t.Fatalf("Canonical=%q want meter_per_second", s.Canonical)
 		}
 	}
 }
@@ -207,12 +292,16 @@ func completeHasText(got CompleteResult, text string) bool {
 	if got.Parsed != nil && got.Parsed.Name == text {
 		return true
 	}
-	for _, s := range got.Suggestions {
-		if s.Text == text {
-			return true
+	return suggestionByText(got, text) != nil
+}
+
+func suggestionByText(got CompleteResult, text string) *Completion {
+	for i := range got.Suggestions {
+		if got.Suggestions[i].Text == text {
+			return &got.Suggestions[i]
 		}
 	}
-	return false
+	return nil
 }
 
 func suggestionTexts(got CompleteResult) []string {

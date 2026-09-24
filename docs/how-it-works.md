@@ -71,7 +71,7 @@ Compound expressions are several names and operators. `meter / second` reduces e
 
 You can ask whether two units would land on the same dimension (compatibility) or go ahead and apply the factor (conversion).
 
-Aliases collapse to a canonical name. `degC` is `degree_Celsius`. Persist the canonical string.
+Aliases collapse to a canonical name. `degC` is `degree_Celsius`. A catalog unit that is defined as a product (`mile_per_hour = mile / hour`) is the stored name for that product and for aliases (`mph`). Persist the canonical string.
 
 Short symbols can parse as physical constants (`c` is speed of light, `k` is Boltzmann) because those names sit in the same web the engine needs for definitions and context formulas. A unit picker usually offers `atm`. It usually should not offer `planck_constant`.
 

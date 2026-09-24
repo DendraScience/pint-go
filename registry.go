@@ -41,6 +41,9 @@ type Registry struct {
 	rootCache  map[string]rootResult
 	dimCache   map[string]UnitsContainer
 	convCache  map[string]float64
+	// unitByExpr maps a compound definition RHS (UnitsContainer.String)
+	// to a unique catalog name. Ambiguous keys are omitted.
+	unitByExpr map[string]string
 
 	sourceFiles []string
 }
@@ -122,6 +125,7 @@ func newEmptyRegistry(opts ...Option) *Registry {
 		rootCache:      map[string]rootResult{},
 		dimCache:       map[string]UnitsContainer{},
 		convCache:      map[string]float64{},
+		unitByExpr:     map[string]string{},
 	}
 	for _, o := range opts {
 		o(r)
@@ -442,6 +446,45 @@ func (r *Registry) buildCaches() {
 	r.rootCache = map[string]rootResult{}
 	r.dimCache = map[string]UnitsContainer{}
 	r.convCache = map[string]float64{}
+	r.unitByExpr = catalogExprIndex(r.unitByName)
+}
+
+// catalogExprIndex maps compound definition products (mile / hour) to the
+// unique catalog name defined as that product (mile_per_hour). Scale≠1,
+// offsets, logs, and duplicate RHS values are left out so ParseUnitName
+// does not pick among aliases of a size.
+func catalogExprIndex(byName map[string]*unitDef) map[string]string {
+	out := map[string]string{}
+	ambiguous := map[string]struct{}{}
+	for name, def := range byName {
+		if def == nil || def.isBase || !def.isMultiplicative() || def.converter.Scale() != 1 {
+			continue
+		}
+		if def.reference.Len() < 2 {
+			continue
+		}
+		skip := false
+		for _, n := range def.reference.Names() {
+			if isDim(n) {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+		key := def.reference.String()
+		if _, dup := ambiguous[key]; dup {
+			continue
+		}
+		if prev, ok := out[key]; ok && prev != name {
+			delete(out, key)
+			ambiguous[key] = struct{}{}
+			continue
+		}
+		out[key] = name
+	}
+	return out
 }
 
 func (r *Registry) lookupUnit(name string) (*unitDef, error) {
@@ -483,6 +526,9 @@ func (r *Registry) getName(name string) (string, error) {
 				name:      full,
 				converter: NewScaleConverter(pd.value),
 				reference: unitPair(uname, 1),
+			}
+			if u != nil && pd != nil {
+				nu.symbol = composedSymbol(*pd, u)
 			}
 			r.units[full] = nu
 			r.unitByName[full] = nu

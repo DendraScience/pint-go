@@ -20,7 +20,7 @@ Extra definition text goes through `Load` (whole files, including `@context` blo
 
 Python Pint has no equivalent of these two.
 
-`ParseUnitName("degC")` returns `degree_Celsius`, plus symbol, dimensionality, and aliases. Persist that canonical string.
+`ParseUnitName("degC")` returns `degree_Celsius`, plus symbol, dimensionality, and aliases. `ParseUnitName("mile per hour")` and `"mph"` both return `mile_per_hour` when that catalog unit is defined as `mile / hour`. Compounds with no catalog name stay as the parsed expression (`centimeter / hour`). Persist that canonical string.
 
 `Complete` is typeahead for a unit picker. It fills the current unit slot: `kilopa` becomes `kilopascal`, `watt / h` becomes `watt / hour`. If the whole input already parses, that unit is `Parsed`. Other rows are `Suggestions`. JSON field names on those types are part of the API.
 

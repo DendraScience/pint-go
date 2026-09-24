@@ -86,5 +86,5 @@ Add next to `complete_test.go`. Existing prefix tests (`kilopa`, `millim`, `kPa`
 ## Out of scope
 
 - Context picker on `Complete` (still none; `Compatible` / `Convert` take `Scope`).
-- Vue list chrome (`parsed · [length]` copy, blur commit).
+- Vue list chrome (name + distinct symbol; named quantity is FOLLOWUPS § pint-go Complete typeahead).
 - Changing `minPrefixUnitPartial` globally to 2 — that would break `kPa` / `mm`-style composition for slots that do **not** already parse.
